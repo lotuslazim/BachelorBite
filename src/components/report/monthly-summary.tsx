@@ -57,6 +57,10 @@ interface ProcessedMember {
   otherExpenses: number;
   utilityExpensesPaid: number;
   memberUtilityExpenses: Expense[];
+  electricityShare: number;
+  gasShare: number;
+  wifiShare: number;
+  etcShare: number;
   totalPaid: number;
   isSettled?: boolean;
   settlementDetails?: SettlementRecord;
@@ -67,7 +71,6 @@ interface ProcessedData {
   totalGroupFoodExpenses: number;
   totalGroupOtherExpenses: number;
   totalGroupMeals: number;
-  memberCount: number;
   mealRate: number;
   totalGroupExpenses: number;
   totalUtilityExpenses: number;
@@ -136,6 +139,7 @@ function CollapsibleUtilityItem({
   member: ProcessedMember;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const utilityShare = member.electricityShare + member.gasShare + member.wifiShare;
 
   return (
     <div className="border-b last:border-b-0 py-2">
@@ -145,21 +149,32 @@ function CollapsibleUtilityItem({
         aria-expanded={isExpanded}
       >
         <span className="font-medium text-sm">{member.name}</span>
-        <div className="flex items-center gap-4">
-          <span className="text-muted-foreground font-semibold text-sm">
-            ৳{(member.utilityExpensesPaid || 0).toFixed(2)}
-          </span>
-          <div className="w-9 p-0 flex items-center justify-center">
-            <ChevronDown className={cn(
-              "h-4 w-4 transition-transform duration-200",
-              isExpanded ? "rotate-180" : ""
-            )} />
-          </div>
+        <div className="flex flex-col items-end gap-0.5 pr-2">
+          <span className="font-semibold text-sm">Share: ৳{utilityShare.toFixed(2)}</span>
+          <span className="text-xs text-muted-foreground">Paid: ৳{(member.utilityExpensesPaid || 0).toFixed(2)}</span>
+        </div>
+        <div className="w-9 p-0 flex items-center justify-center">
+          <ChevronDown className={cn(
+            "h-4 w-4 transition-transform duration-200",
+            isExpanded ? "rotate-180" : ""
+          )} />
         </div>
       </button>
       
       {isExpanded && (
-        <div className="mt-2">
+        <div className="mt-2 space-y-3 px-2">
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              ["Electricity share", member.electricityShare],
+              ["Gas share", member.gasShare],
+              ["Wi-Fi share", member.wifiShare],
+            ].map(([label, amount]) => (
+              <div key={String(label)} className="rounded-md bg-muted/50 p-2">
+                <p className="text-[11px] text-muted-foreground">{label}</p>
+                <p className="text-sm font-semibold">৳{Number(amount).toFixed(2)}</p>
+              </div>
+            ))}
+          </div>
           {member.memberUtilityExpenses?.length > 0 ? (
             <Table className="bg-muted/50 rounded">
               <TableHeader>
@@ -377,66 +392,81 @@ export function MonthlySummary() {
     }, {} as Record<string, SettlementRecord>);
 
 
-    const processedMembers = membersData.map(member => {
-      const userDetails = userMap[member.id];
-      const memberMeals = (mealsByUser[member.id] || []).sort(sortByDateDesc);
-      const memberExpenses = (expensesByUser[member.id] || []);
-      const totalMeals = memberMeals.reduce((sum, meal) => sum + (meal.mealNumber ?? 1), 0);
-      const foodExpenses = memberExpenses.filter(e => e.category === 'Food & Groceries').reduce((sum, e) => sum + (e.amount || 0), 0);
-      const otherExpenses = memberExpenses.filter(e => e.category === 'Other').reduce((sum, e) => sum + (e.amount || 0), 0);
-      const memberUtilityExpenses = memberExpenses.filter(e => e.category === 'Electricity' || e.category === 'Gas' || e.category === 'Wi-Fi').sort(sortByDateDesc);
-      const utilityExpensesPaid = memberUtilityExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-      const totalPaid = memberExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-      const settlement = settlementsByUser[member.id];
-
-      return {
-        id: member.id,
-        name: userDetails?.displayName || userDetails?.email?.split('@')[0] || memberMeals[0]?.userName || memberExpenses[0]?.userName || 'Unnamed Member',
-        photoURL: userDetails?.photoURL,
-        meals: totalMeals,
-        memberMeals,
-        foodExpenses,
-        otherExpenses,
-        utilityExpensesPaid,
-        memberUtilityExpenses,
-        totalPaid,
-        isSettled: !!settlement,
-        settlementDetails: settlement,
-      } as ProcessedMember;
+    const monthStart = monthDateRange.start.toDate();
+    const monthEnd = monthDateRange.end.toDate();
+    const asDate = (value: any): Date | null => {
+      if (!value) return null;
+      if (value instanceof Date) return value;
+      if (typeof value.toDate === "function") return value.toDate();
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+    // Use only members who were active during this month, matching the
+    // Admin sheet and Settlement History denominator.
+    const activeMembers = membersData.filter((member: any) => {
+      const joinedAt = asDate(member.joinedAt);
+      const leftAt = asDate(member.leftAt);
+      return (!joinedAt || joinedAt <= monthEnd) && (!leftAt || leftAt >= monthStart);
     });
 
-    const totalGroupFoodExpenses = processedMembers.reduce((acc, member) => acc + (member.foodExpenses || 0), 0);
-    const totalGroupOtherExpenses = processedMembers.reduce((acc, member) => acc + (member.otherExpenses || 0), 0);
-    const totalGroupMeals = processedMembers.reduce((acc, member) => acc + (member.meals || 0), 0);
-    const memberCount = processedMembers.length > 0 ? processedMembers.length : 1;
-    const mealRate = totalGroupMeals > 0 ? totalGroupFoodExpenses / totalGroupMeals : 0;
-    const totalUtilityExpenses = expensesData.filter(e => e.category === 'Electricity' || e.category === 'Gas' || e.category === 'Wi-Fi').reduce((sum, e) => sum + (e.amount || 0), 0);
-    const totalGroupExpenses = expensesData.reduce((sum, e) => sum + (e.amount || 0), 0);
-    const otherExpensesList = expensesData.filter(e => e.category === 'Other').sort(sortByDateDesc);
-
-    // Shared calculation (same as Admin sheet and Settlement History).
     const monthCalc = computeMonth({
-      members: membersData.filter((m: any) => processedMembers.some(p => p.id === m.id)),
+      members: activeMembers,
       meals: mealsData,
       expenses: expensesData,
       leaves: leavesData ?? [],
       adjustments: adjustmentsData ?? [],
-      // Fix: computeMonth Date চায়; Timestamp দিলে getFullYear() নেই বলে crash করত।
-      monthStart: monthDateRange.start.toDate(),
-      monthEnd: monthDateRange.end.toDate(),
+      monthStart,
+      monthEnd,
       leaveCategories: sheetSettingsData?.leaveCategories,
       minLeaveDays: sheetSettingsData?.minLeaveDays,
       splitMembers: monthSettingsData?.splitMembers,
     });
+
+    const processedMembers = activeMembers.map((member: any) => {
+      const userDetails = userMap[member.id];
+      const memberMeals = (mealsByUser[member.id] || []).sort(sortByDateDesc);
+      const memberExpenses = expensesByUser[member.id] || [];
+      const r = monthCalc.byMember[member.id];
+      const memberUtilityExpenses = memberExpenses
+        .filter(e => e.category === "Electricity" || e.category === "Gas" || e.category === "Wi-Fi")
+        .sort(sortByDateDesc);
+
+      return {
+        id: member.id,
+        name: userDetails?.displayName || userDetails?.email?.split("@")[0] || memberMeals[0]?.userName || memberExpenses[0]?.userName || "Unnamed Member",
+        photoURL: userDetails?.photoURL,
+        meals: r?.meals ?? 0,
+        memberMeals,
+        foodExpenses: r?.bazar ?? 0,
+        otherExpenses: r?.etc ?? 0,
+        utilityExpensesPaid: r?.utilities ?? 0,
+        memberUtilityExpenses,
+        electricityShare: r?.electricityShare ?? 0,
+        gasShare: r?.gasShare ?? 0,
+        wifiShare: r?.wifiShare ?? 0,
+        etcShare: r?.etcShare ?? 0,
+        totalPaid: memberExpenses.reduce((sum, e) => sum + (e.amount || 0), 0) + (r?.paidAdjustment ?? 0),
+        isSettled: !!settlementsByUser[member.id],
+        settlementDetails: settlementsByUser[member.id],
+      } as ProcessedMember;
+    });
+
+    const totalGroupFoodExpenses = monthCalc.foodTotal;
+    const totalGroupOtherExpenses = processedMembers.reduce((sum, member) => sum + member.otherExpenses, 0);
+    const totalGroupMeals = monthCalc.totalMeals;
+    const mealRate = monthCalc.mealRate;
+    const totalUtilityExpenses = processedMembers.reduce(
+      (sum, member) => sum + (monthCalc.byMember[member.id]?.utilities ?? 0),
+      0
+    );
+    const totalGroupExpenses = processedMembers.reduce(
+      (sum, member) => sum + (monthCalc.byMember[member.id]?.total ?? 0),
+      0
+    );
+    const otherExpensesList = expensesData.filter(e => e.category === "Other").sort(sortByDateDesc);
     const utilityShareByMember: Record<string, number> = {};
     processedMembers.forEach((member) => {
-      const r = monthCalc.byMember[member.id];
-      if (r) {
-        member.meals = r.meals;
-        member.totalPaid = member.totalPaid + r.paidAdjustment;
-        member.foodExpenses = r.bazar;
-        utilityShareByMember[member.id] = r.settlementShare;
-      }
+      utilityShareByMember[member.id] = monthCalc.byMember[member.id]?.settlementShare ?? 0;
     });
 
     return {
@@ -444,7 +474,6 @@ export function MonthlySummary() {
       totalGroupFoodExpenses,
       totalGroupOtherExpenses,
       totalGroupMeals: monthCalc.totalMeals,
-      memberCount,
       mealRate: monthCalc.mealRate || mealRate || 0,
       totalGroupExpenses: totalGroupExpenses || 0,
       totalUtilityExpenses: totalUtilityExpenses || 0,
@@ -470,7 +499,6 @@ export function MonthlySummary() {
       totalGroupFoodExpenses,
       totalGroupOtherExpenses,
       totalGroupMeals,
-      memberCount,
       mealRate,
       totalGroupExpenses,
       totalUtilityExpenses,
@@ -478,11 +506,8 @@ export function MonthlySummary() {
       utilityShareByMember
   } = processedData;
 
-  const perMemberUtilityShare = totalUtilityExpenses / (memberCount || 1);
-  const perMemberOtherShare = totalGroupOtherExpenses / (memberCount || 1);
-  
   const balanceOf = (member: ProcessedMember) => {
-    const share = utilityShareByMember[member.id] ?? (member.meals * mealRate + perMemberUtilityShare + perMemberOtherShare);
+    const share = utilityShareByMember[member.id] ?? member.meals * mealRate;
     return member.totalPaid - share;
   };
   const settleMembers = processedMembers.map((m) => ({ id: m.id, name: m.name, balance: balanceOf(m) }));
@@ -642,9 +667,8 @@ export function MonthlySummary() {
 
         <CardContent className="space-y-3 p-3 pt-2">
           {processedMembers.map((member) => {
-            const totalMealCost = member.meals * mealRate;
-            // utilityShareByMember now holds each member's full Total from the shared calculation.
-            const memberShare = utilityShareByMember[member.id] ?? (totalMealCost + perMemberUtilityShare + perMemberOtherShare);
+            // This is the full member share from the shared calculation engine.
+            const memberShare = utilityShareByMember[member.id] ?? member.meals * mealRate;
             const balance = member.totalPaid - memberShare;
             const hasCredit = balance >= 0;
 
@@ -762,6 +786,19 @@ export function MonthlySummary() {
                           <p className="mt-0.5 text-[12px] font-semibold text-[#edf6f3]">
                             {value}
                           </p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {[
+                        ["Electricity share", member.electricityShare],
+                        ["Gas share", member.gasShare],
+                        ["Wi-Fi share", member.wifiShare],
+                        ["ETC share", member.etcShare],
+                      ].map(([label, amount]) => (
+                        <div key={String(label)} className="rounded-xl border border-[#5eead4]/12 bg-[#0b2728]/72 px-2.5 py-2">
+                          <p className="text-[10px] text-[#8fb0ac]">{label}</p>
+                          <p className="mt-0.5 text-[12px] font-semibold text-[#edf6f3]">৳{Number(amount).toFixed(2)}</p>
                         </div>
                       ))}
                     </div>
