@@ -25,6 +25,10 @@ interface ProcessedMember {
   photoURL?: string;
   totalPaid: number;
   totalShare: number;
+  electricityShare: number;
+  gasShare: number;
+  wifiShare: number;
+  etcShare: number;
   balance: number;
   isSettled?: boolean;
   settlementDetails?: Settlement;
@@ -36,6 +40,16 @@ interface MonthlyRecord {
   totalGroupExpenses: number;
   mealRate: number;
 }
+
+const toJsDate = (value: unknown): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof (value as { toDate?: unknown }).toDate === "function") {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  const parsed = new Date(value as string);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
 
 function HistorySkeleton() {
   return (
@@ -156,24 +170,15 @@ export function SettlementHistory() {
 
             // Filter members who were active during the loopMonth
             const activeMembersInMonth = membersData.filter(m => {
-                const joinedAt = m.joinedAt.toDate();
-                const leftAt = m.leftAt?.toDate();
-                const wasActive = joinedAt <= monthEnd && (!leftAt || leftAt >= monthStart);
-                return wasActive;
+                const joinedAt = toJsDate(m.joinedAt);
+                const leftAt = toJsDate(m.leftAt);
+                return (!joinedAt || joinedAt <= monthEnd) && (!leftAt || leftAt >= monthStart);
             });
-            const memberCount = activeMembersInMonth.length || 1;
 
             const mealsByUser = mealsData.reduce((acc, meal) => { (acc[meal.userId] = acc[meal.userId] || []).push(meal); return acc; }, {} as Record<string, MealLog[]>);
             const expensesByUser = expensesData.reduce((acc, expense) => { (acc[expense.userId] = acc[expense.userId] || []).push(expense); return acc; }, {} as Record<string, Expense[]>);
             const settlementsByUser = settlementsData.reduce((acc, settlement) => { acc[settlement.userId] = settlement; return acc; }, {} as Record<string, Settlement>);
 
-            const totalGroupFoodExpenses = expensesData.filter(e => e.category === 'Food & Groceries').reduce((sum, e) => sum + e.amount, 0);
-            const totalGroupOtherExpenses = expensesData.filter(e => e.category === 'Other').reduce((sum, e) => sum + e.amount, 0);
-            const totalUtilityExpenses = expensesData.filter(e => ['Electricity', 'Gas', 'Wi-Fi'].includes(e.category)).reduce((sum, e) => sum + e.amount, 0);
-            const totalGroupMeals = mealsData.reduce((sum, meal) => sum + meal.mealNumber, 0);
-            const mealRate = totalGroupMeals > 0 ? totalGroupFoodExpenses / totalGroupMeals : 0;
-            const perMemberUtilityShare = totalUtilityExpenses / memberCount;
-            const perMemberOtherShare = totalGroupOtherExpenses / memberCount;
             const monthCalc = computeMonth({
                 members: activeMembersInMonth,
                 meals: mealsData,
@@ -183,20 +188,17 @@ export function SettlementHistory() {
                 monthStart,
                 monthEnd,
                 leaveCategories: sheetSettings?.leaveCategories,
-      minLeaveDays: sheetSettings?.minLeaveDays,
+                minLeaveDays: sheetSettings?.minLeaveDays,
                 splitMembers: monthSettingsMap[monthKeyOf(monthStart)]?.splitMembers,
             });
 
             const processedMembers = activeMembersInMonth.map(member => {
                 const userDetails = userMap[member.id];
                 const memberMeals = mealsByUser[member.id] || [];
-                const totalMealCount = memberMeals.reduce((sum, meal) => sum + meal.mealNumber, 0);
-                const totalMealCost = totalMealCount * mealRate;
-
                 const memberExpenses = expensesByUser[member.id] || [];
-                const totalPaid = memberExpenses.reduce((sum, e) => sum + e.amount, 0) + (monthCalc.byMember[member.id]?.paidAdjustment || 0);
-                
-                const totalShare = monthCalc.byMember[member.id]?.settlementShare ?? (totalMealCost + perMemberUtilityShare + perMemberOtherShare);
+                const memberCalc = monthCalc.byMember[member.id];
+                const totalPaid = memberExpenses.reduce((sum, e) => sum + e.amount, 0) + (memberCalc?.paidAdjustment || 0);
+                const totalShare = memberCalc?.settlementShare ?? 0;
                 const balance = totalPaid - totalShare;
 
                 return {
@@ -205,17 +207,27 @@ export function SettlementHistory() {
                     photoURL: userDetails?.photoURL,
                     totalPaid,
                     totalShare,
+                    electricityShare: memberCalc?.electricityShare ?? 0,
+                    gasShare: memberCalc?.gasShare ?? 0,
+                    wifiShare: memberCalc?.wifiShare ?? 0,
+                    etcShare: memberCalc?.etcShare ?? 0,
                     balance,
                     isSettled: !!settlementsByUser[member.id],
                     settlementDetails: settlementsByUser[member.id],
                 };
             });
 
+            const totalGroupExpenses = activeMembersInMonth.reduce(
+                (sum, member) => sum + (monthCalc.byMember[member.id]?.total ?? 0),
+                0
+            );
+            const mealRate = monthCalc.mealRate;
+
             if (mealsData.length > 0 || expensesData.length > 0) {
               monthlyRecords.push({
                   month: loopMonth,
                   processedMembers,
-                  totalGroupExpenses: totalGroupFoodExpenses + totalUtilityExpenses + totalGroupOtherExpenses,
+                  totalGroupExpenses,
                   mealRate,
               });
             }
@@ -281,6 +293,12 @@ export function SettlementHistory() {
                                </Avatar>
                                <div className="flex-1">
                                  <p className="font-semibold">{member.name}</p>
+                                 <p className="mt-1 text-xs text-muted-foreground">
+                                   Utilities share: Electricity ৳{member.electricityShare.toFixed(2)} · Gas ৳{member.gasShare.toFixed(2)} · Wi-Fi ৳{member.wifiShare.toFixed(2)}
+                                 </p>
+                                 <p className="text-xs text-muted-foreground">
+                                   ETC share: ৳{member.etcShare.toFixed(2)} · Total share: ৳{member.totalShare.toFixed(2)} · Total paid: ৳{member.totalPaid.toFixed(2)}
+                                 </p>
                                  <div className={cn("font-bold text-lg", member.balance >= 0 ? 'text-green-600' : 'text-red-600')}>
                                    {member.balance >= 0 ? `Gets: ` : `Owes: `}
                                    ৳{Math.abs(member.balance).toFixed(2)}
