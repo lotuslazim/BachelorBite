@@ -47,7 +47,6 @@ import {
   fieldOfCategory,
   type AdjustField,
   type BillType,
-  type SheetField,
   type MonthAdjustment,
   type MonthSettings,
   type SheetSettings,
@@ -81,26 +80,10 @@ type MemberDoc = {
 
 type LeaveDoc = LeaveRecord & { addedByAdmin?: boolean };
 
-const FIELD_LABEL: Record<SheetField, string> = {
+const FIELD_LABEL: Record<AdjustField, string> = {
   meals: "Meals",
   bazar: "Bazar",
   utilities: "Utilities",
-  etc: "ETC",
-};
-
-type UtilityAdjustmentField = "electricity" | "gas" | "wifi";
-
-const UTILITY_ADJUSTMENT_LABEL: Record<UtilityAdjustmentField, string> = {
-  electricity: "Electricity",
-  gas: "Gas",
-  wifi: "Wi-Fi",
-};
-
-const ADJUSTMENT_LABEL: Record<AdjustField, string> = {
-  meals: "Meals",
-  bazar: "Bazar",
-  electricity: "Electricity",
-  gas: "Gas",
   wifi: "Wi-Fi",
   etc: "ETC",
 };
@@ -247,44 +230,28 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
   };
 
   /* ================= cell edit ================= */
-  const [edit, setEdit] = useState<{ userId: string; field: SheetField } | null>(null);
-  const [utilityAdjustmentCategory, setUtilityAdjustmentCategory] = useState<UtilityAdjustmentField>("electricity");
+  const [edit, setEdit] = useState<{ userId: string; field: AdjustField } | null>(null);
   const [mode, setMode] = useState<"change" | "set">("change");
   const [value, setValue] = useState("");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // The Utilities cell is an aggregate. Any manual adjustment made from it
-  // must still target one explicit bill category, never the aggregate itself.
-  const adjustmentField: AdjustField | null = !edit
-    ? null
-    : edit.field === "utilities"
-      ? utilityAdjustmentCategory
-      : edit.field;
   const currentValue = edit ? (result.byMember[edit.userId]?.[edit.field] ?? 0) : 0;
-  const adjustmentCurrentValue = edit && adjustmentField
-    ? (result.byMember[edit.userId]?.[adjustmentField] ?? 0)
-    : 0;
   const parsed = Number(value);
-  const delta = !value.trim() || !Number.isFinite(parsed)
-    ? 0
-    : mode === "set"
-      ? parsed - adjustmentCurrentValue
-      : parsed;
-  const newValue = adjustmentCurrentValue + delta;
-  const fmtField = (field: SheetField | AdjustField, n: number) => (field === "meals" ? num(n) : money(n));
+  const delta = !value.trim() || !Number.isFinite(parsed) ? 0 : mode === "set" ? parsed - currentValue : parsed;
+  const newValue = currentValue + delta;
+  const fmtField = (field: AdjustField, n: number) => (field === "meals" ? num(n) : money(n));
 
-  const openEdit = (userId: string, field: SheetField) => {
+  const openEdit = (userId: string, field: AdjustField) => {
     setEdit({ userId, field });
-    if (field === "utilities") setUtilityAdjustmentCategory("electricity");
     setMode("change");
     setValue("");
     setReason("");
   };
 
   const saveEdit = async () => {
-    if (!edit || !user || !adjustmentField || !delta) return;
-    if (adjustmentField === "meals" && newValue < 0) {
+    if (!edit || !user || !delta) return;
+    if (edit.field === "meals" && newValue < 0) {
       toast({ variant: "destructive", title: "Meals cannot go below 0" });
       return;
     }
@@ -295,12 +262,11 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
       const actRef = doc(collection(firestore, `groups/${groupId}/notifications`));
       const cleanReason = reason.trim();
       const who = names[edit.userId] || "Member";
-      const adjustmentLabel = ADJUSTMENT_LABEL[adjustmentField];
 
       batch.set(adjRef, {
         userId: edit.userId,
         monthKey,
-        field: adjustmentField,
+        field: edit.field,
         delta,
         reason: cleanReason,
         createdBy: user.uid,
@@ -313,7 +279,7 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
         senderId: user.uid,
         senderName: actorName(),
         targetUserId: edit.userId,
-        messageText: `changed ${who}'s ${adjustmentLabel} for ${format(month, "MMMM yyyy")}: ${fmtField(adjustmentField, adjustmentCurrentValue)} → ${fmtField(adjustmentField, newValue)} (${delta > 0 ? "+" : "−"}${fmtField(adjustmentField, Math.abs(delta))})${cleanReason ? `. Reason: ${cleanReason}` : ""}`.slice(0, 500),
+        messageText: `changed ${who}'s ${FIELD_LABEL[edit.field]} for ${format(month, "MMMM yyyy")}: ${fmtField(edit.field, currentValue)} → ${fmtField(edit.field, newValue)} (${delta > 0 ? "+" : "−"}${fmtField(edit.field, Math.abs(delta))})${cleanReason ? `. Reason: ${cleanReason}` : ""}`.slice(0, 500),
         type: "admin_adjustment",
         ...(cleanReason ? { reason: cleanReason } : {}),
         createdAt: serverTimestamp(),
@@ -334,17 +300,11 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
   const [rowValues, setRowValues] = useState<Record<string, string>>({});
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
-  const entriesFor = (userId: string, field: SheetField) => {
+  const entriesFor = (userId: string, field: AdjustField) => {
     const byDate = (a: { date: unknown }, b: { date: unknown }) =>
       (toDate(a.date)?.getTime() ?? 0) - (toDate(b.date)?.getTime() ?? 0);
     if (field === "meals") return (meals ?? []).filter((m) => m.userId === userId).sort(byDate);
-    return (expenses ?? []).filter((e) => {
-      if (e.userId !== userId) return false;
-      if (field === "utilities") {
-        return e.category === "Electricity" || e.category === "Gas" || e.category === "Wi-Fi";
-      }
-      return fieldOfCategory(e.category) === field;
-    }).sort(byDate);
+    return (expenses ?? []).filter((e) => e.userId === userId && fieldOfCategory(e.category) === field).sort(byDate);
   };
 
   useEffect(() => {
@@ -634,9 +594,9 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
         toast({ variant: "destructive", title: `Choose at least one member for ${BILL_LABEL[b]}` });
         return;
       }
-      // null means All for utility bills; for ETC, null retains the existing
-      // owner-only default. A selected array always means those members only.
-      cleanSplit[b] = chosen && (b === "Other" || chosen.length < members.length) ? chosen : null;
+      // null means All Members for every category, including ETC.
+      // Store an explicit list only when the admin excludes at least one member.
+      cleanSplit[b] = chosen && chosen.length < members.length ? chosen : null;
     }
     if (locked) {
       toast({ variant: "destructive", title: "This month is locked", description: "Unlock it to change who shares the bills." });
@@ -654,7 +614,7 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
       await setDoc(monthSettingsRef, { splitMembers: cleanSplit, updatedBy: user.uid, updatedAt: serverTimestamp() }, { merge: true });
 
       const splitText = BILL_TYPES.map((b) =>
-        `${BILL_LABEL[b]}: ${cleanSplit[b] ? cleanSplit[b]!.map((id) => names[id] || "Member").join(", ") : b === "Other" ? "own" : "All"}`
+        `${BILL_LABEL[b]}: ${cleanSplit[b] ? cleanSplit[b]!.map((id) => names[id] || "Member").join(", ") : "All"}`
       ).join("; ");
       await logActivity(
         "admin_settings",
@@ -698,26 +658,23 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
       acc.meals += r.meals;
       acc.bazar += r.bazar;
       acc.utilities += r.utilities;
+      acc.wifi += r.wifi;
       acc.etc += r.etc;
       acc.total += r.total;
       return acc;
     },
-    { meals: 0, bazar: 0, utilities: 0, etc: 0, total: 0 }
+    { meals: 0, bazar: 0, utilities: 0, wifi: 0, etc: 0, total: 0 }
   );
 
   const cell = "border-b border-r border-border/60";
   const sticky = "sticky left-0 z-10 bg-card";
   const head = "px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground whitespace-nowrap";
 
-  const EditCell = ({ userId, field }: { userId: string; field: SheetField }) => {
+  const EditCell = ({ userId, field }: { userId: string; field: AdjustField }) => {
     const r = result.byMember[userId];
     const v = r?.[field] ?? 0;
-    const change = field === "utilities"
-      ? (r?.adjustments.electricity ?? 0) + (r?.adjustments.gas ?? 0) + (r?.adjustments.wifi ?? 0)
-      : r?.adjustments[field] ?? 0;
-    const times = field === "utilities"
-      ? (r?.entryCount.electricity ?? 0) + (r?.entryCount.gas ?? 0) + (r?.entryCount.wifi ?? 0)
-      : r?.entryCount[field] ?? 0;
+    const change = r?.adjustments[field] ?? 0;
+    const times = r?.entryCount[field] ?? 0;
     return (
       <td className={`${cell} p-0`}>
         <button
@@ -728,11 +685,6 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
         >
           <span className="flex flex-col items-end leading-tight">
             <span>{fmtField(field, v)}</span>
-            {field === "utilities" && r && (
-              <span className="text-[10px] text-muted-foreground">
-                E {money(r.electricity)} · G {money(r.gas)} · Wi-Fi {money(r.wifi)}
-              </span>
-            )}
             {times > 0 && <span className="text-[11px] text-muted-foreground">{times}×</span>}
           </span>
           {change !== 0 && <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-primary" />}
@@ -794,7 +746,7 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
                 <thead className="bg-muted/40">
                   <tr>
                     <th className={`${head} ${sticky} ${cell} text-left`}>Name</th>
-                    {(["meals", "bazar", "utilities", "etc"] as SheetField[]).map((f) => (
+                    {(["meals", "bazar", "utilities", "wifi", "etc"] as AdjustField[]).map((f) => (
                       <th key={f} className={`${head} ${cell} text-right`}>{FIELD_LABEL[f]}</th>
                     ))}
                     <th className={`${head} ${cell} text-right`}>Total</th>
@@ -812,6 +764,7 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
                         <EditCell userId={m.id} field="meals" />
                         <EditCell userId={m.id} field="bazar" />
                         <EditCell userId={m.id} field="utilities" />
+                        <EditCell userId={m.id} field="wifi" />
                         <EditCell userId={m.id} field="etc" />
                         <td className={`${cell} px-4 text-right text-base font-bold tabular-nums`}>{money(r?.total ?? 0)}</td>
                         <td className="border-b border-border/60 p-0">
@@ -841,6 +794,7 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
                     <td className="border-r border-border/60 px-4 py-4 text-right tabular-nums">{num(totals.meals)}</td>
                     <td className="border-r border-border/60 px-4 py-4 text-right tabular-nums">{money(totals.bazar)}</td>
                     <td className="border-r border-border/60 px-4 py-4 text-right tabular-nums">{money(totals.utilities)}</td>
+                    <td className="border-r border-border/60 px-4 py-4 text-right tabular-nums">{money(totals.wifi)}</td>
                     <td className="border-r border-border/60 px-4 py-4 text-right tabular-nums">{money(totals.etc)}</td>
                     <td className="border-r border-border/60 px-4 py-4 text-right tabular-nums">{money(totals.total)}</td>
                     <td />
@@ -928,29 +882,6 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
                 <p className="font-semibold">Extra change (without an entry)</p>
                 <p className="text-xs text-muted-foreground">Add or subtract on top of the entries, e.g. +500 or -200.</p>
               </div>
-              {edit?.field === "utilities" && (
-                <div className="space-y-1">
-                  <Label htmlFor="utility-adjustment-category">Apply adjustment to</Label>
-                  <select
-                    id="utility-adjustment-category"
-                    value={utilityAdjustmentCategory}
-                    onChange={(e) => {
-                      setUtilityAdjustmentCategory(e.target.value as UtilityAdjustmentField);
-                      setValue("");
-                      setMode("change");
-                    }}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    disabled={locked}
-                  >
-                    <option value="electricity">Electricity</option>
-                    <option value="gas">Gas</option>
-                    <option value="wifi">Wi-Fi</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    Current {UTILITY_ADJUSTMENT_LABEL[utilityAdjustmentCategory]} total: {money(adjustmentCurrentValue)}
-                  </p>
-                </div>
-              )}
               <div className="grid grid-cols-2 gap-2">
                 <Button type="button" size="sm" variant={mode === "change" ? "default" : "outline"} onClick={() => setMode("change")}>
                   Add / Subtract
@@ -962,7 +893,7 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
               <div className="flex gap-2">
                 <Input
                   type="number"
-                  step={adjustmentField === "meals" ? "0.5" : "1"}
+                  step={edit?.field === "meals" ? "0.5" : "1"}
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
                   placeholder={mode === "change" ? "-500" : "New total"}
@@ -976,10 +907,10 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
               </div>
               {delta !== 0 && edit && (
                 <p className="text-sm">
-                  New {adjustmentField ? ADJUSTMENT_LABEL[adjustmentField] : "total"}: <span className="font-semibold">{adjustmentField ? fmtField(adjustmentField, newValue) : fmtField(edit.field, newValue)}</span>{" "}
+                  New total: <span className="font-semibold">{fmtField(edit.field, newValue)}</span>{" "}
                   <span className={delta > 0 ? "text-emerald-500" : "text-red-500"}>
                     ({delta > 0 ? "+" : "−"}
-                    {adjustmentField ? fmtField(adjustmentField, Math.abs(delta)) : fmtField(edit.field, Math.abs(delta))})
+                    {fmtField(edit.field, Math.abs(delta))})
                   </span>
                 </p>
               )}
@@ -1142,11 +1073,14 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
             <div className="space-y-3">
               <div>
                 <p className="font-semibold">Who shares each bill</p>
-                <p className="text-sm text-muted-foreground">Electricity, Gas and Wi-Fi can each be shared with All or selected members. ETC stays with the person who added it unless you select members to share it. Every selected group shares that category equally.</p>
+                <p className="text-sm text-muted-foreground">All bills, including ETC, are shared equally by all members by default. Uncheck All to choose who shares a bill.</p>
               </div>
               {BILL_TYPES.map((b) => {
                 const chosen = draftSplit[b];
-                const isAll = !chosen;
+                const selectedCount = chosen
+                  ? members.filter((member) => chosen.includes(member.id)).length
+                  : members.length;
+                const isAll = selectedCount === members.length;
                 return (
                   <div key={b} className="space-y-2 rounded-lg border p-3">
                     <div className="flex items-center justify-between">
@@ -1156,7 +1090,7 @@ export function AdminMonthTable({ groupId }: { groupId: string }) {
                           checked={isAll}
                           onCheckedChange={(v) => setDraftSplit((s) => ({ ...s, [b]: v ? null : members.map((m) => m.id) }))}
                         />
-                        {b === "Other" ? "Only the person who added it" : "All members"}
+                        All
                       </label>
                     </div>
                     {!isAll && (
