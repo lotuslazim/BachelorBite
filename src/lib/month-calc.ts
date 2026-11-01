@@ -5,27 +5,27 @@
  * ADMIN SHEET = what each member entered (no splitting):
  *   Meals     = meals the member logged (+ admin change)
  *   Bazar     = Food & Groceries the member entered (+ admin change)
- *   Utilities = Electricity + Gas the member entered (+ admin change)
- *   Wi-Fi     = Wi-Fi the member entered (+ admin change)
- *   ETC       = any other cost the member entered (+ admin change)
- *   Total     = Bazar + Utilities + Wi-Fi + ETC
+ *   Utilities = Electricity + Gas + Wi-Fi entered (+ category adjustments)
+ *   ETC       = household / other costs entered (+ admin change)
+ *   Total     = Bazar + Utilities + ETC
  *
  * SETTLEMENT = who owes whom (splitting happens only here):
  *   meal rate   = all Bazar / all meals, meal cost = meal rate x meals
- *   bills       = Electricity / Gas / Wi-Fi totals split among the chosen
- *                 members (default all), by days at home if the leave
- *                 discount is on for that bill
- *   ETC         = stays with the person who entered it, unless the admin
- *                 chooses members to share ETC for that month
+ *   bills       = Electricity / Gas / Wi-Fi totals split equally among each
+ *                 bill's selected members (default all); Electricity keeps
+ *                 the existing days-at-home leave formula
+ *   ETC         = stays with the person who entered it unless the admin
+ *                 selects members to share it
  *   share       = meal cost + bill shares + ETC share
  *   paid        = everything the member entered + admin changes
  */
 import type { Expense, MealLog } from "./types";
 import { isMemberHomeOnDay, type LeaveRecord, type MemberPresenceInfo } from "./electricity-split";
 
-export type AdjustField = "meals" | "bazar" | "utilities" | "wifi" | "etc";
-export const ADJUST_FIELDS: AdjustField[] = ["meals", "bazar", "utilities", "wifi", "etc"];
+export type AdjustField = "meals" | "bazar" | "electricity" | "gas" | "wifi" | "etc";
+export const ADJUST_FIELDS: AdjustField[] = ["meals", "bazar", "electricity", "gas", "wifi", "etc"];
 export type MoneyField = Exclude<AdjustField, "meals">;
+export type SheetField = "meals" | "bazar" | "utilities" | "etc";
 
 export const BILL_TYPES = ["Electricity", "Gas", "Wi-Fi", "Other"] as const;
 export type BillType = (typeof BILL_TYPES)[number];
@@ -35,7 +35,9 @@ export interface MonthAdjustment {
   id?: string;
   userId: string;
   monthKey: string;
-  field: AdjustField;
+  // "utilities" is retained only for compatibility with older admin adjustments.
+  // Legacy Utilities adjustments were previously applied to Electricity.
+  field: AdjustField | "utilities";
   delta: number;
   reason?: string;
   createdByName?: string;
@@ -107,12 +109,18 @@ export interface MemberMonthResult {
   meals: number;
   bazar: number;
   utilities: number;
+  electricity: number;
+  gas: number;
   wifi: number;
   etc: number;
   total: number;
   entryCount: Record<AdjustField, number>;
   adjustments: Record<AdjustField, number>;
   mealCost: number;
+  electricityShare: number;
+  gasShare: number;
+  wifiShare: number;
+  etcShare: number;
   settlementShare: number;
   paidAdjustment: number;
   daysHome: number;
@@ -140,7 +148,8 @@ export const monthKeyOf = (input: Date | { toDate: () => Date }) => {
 /* Which sheet column an expense category belongs to. */
 export const fieldOfCategory = (category: string): MoneyField => {
   if (category === "Food & Groceries") return "bazar";
-  if (category === "Electricity" || category === "Gas") return "utilities";
+  if (category === "Electricity") return "electricity";
+  if (category === "Gas") return "gas";
   if (category === "Wi-Fi") return "wifi";
   return "etc";
 };
@@ -177,21 +186,30 @@ export function computeMonth(params: {
 
   const ids = members.map((m) => m.id);
   const zero = () => Object.fromEntries(ids.map((id) => [id, 0])) as Record<string, number>;
-  const blank = (): Record<AdjustField, number> => ({ meals: 0, bazar: 0, utilities: 0, wifi: 0, etc: 0 });
+  const blank = (): Record<AdjustField, number> => ({
+    meals: 0,
+    bazar: 0,
+    electricity: 0,
+    gas: 0,
+    wifi: 0,
+    etc: 0,
+  });
 
   /* ---- admin changes ---- */
   const adj: Record<string, Record<AdjustField, number>> = {};
   ids.forEach((id) => (adj[id] = blank()));
   adjustments.forEach((a) => {
-    if (!adj[a.userId] || !ADJUST_FIELDS.includes(a.field)) return;
-    adj[a.userId][a.field] += Number(a.delta) || 0;
+    if (!adj[a.userId]) return;
+    // Backward compatibility: old "utilities" adjustments were treated as
+    // Electricity by the previous calculation and must keep that meaning.
+    const field: AdjustField = a.field === "utilities" ? "electricity" : a.field;
+    if (!ADJUST_FIELDS.includes(field)) return;
+    adj[a.userId][field] += Number(a.delta) || 0;
   });
 
   /* ---- what each member entered ---- */
   const entered: Record<string, Record<AdjustField, number>> = {};
   const count: Record<string, Record<AdjustField, number>> = {};
-  const elecEntered = zero();
-  const gasEntered = zero();
   ids.forEach((id) => {
     entered[id] = blank();
     count[id] = blank();
@@ -207,8 +225,6 @@ export function computeMonth(params: {
     const field = fieldOfCategory(e.category);
     entered[e.userId][field] += amount;
     count[e.userId][field] += 1;
-    if (e.category === "Electricity") elecEntered[e.userId] += amount;
-    if (e.category === "Gas") gasEntered[e.userId] += amount;
   });
 
   const col = (id: string, f: AdjustField) => entered[id][f] + adj[id][f];
@@ -245,9 +261,10 @@ export function computeMonth(params: {
   };
 
   const sumIds = (fn: (id: string) => number) => ids.reduce((s, id) => s + fn(id), 0);
-  /* admin Utilities changes count as Electricity */
-  const elecShare = split("Electricity", sumIds((id) => elecEntered[id] + adj[id].utilities));
-  const gasShare = split("Gas", sumIds((id) => gasEntered[id]));
+  // Each utility bill has its own total and its own admin-selected sharers.
+  // Electricity's existing leave/day-weighted split remains unchanged.
+  const elecShare = split("Electricity", sumIds((id) => col(id, "electricity")));
+  const gasShare = split("Gas", sumIds((id) => col(id, "gas")));
   const wifiShare = split("Wi-Fi", sumIds((id) => col(id, "wifi")));
   const etcSplitOn = Array.isArray(splitMembers?.Other) && splitMembers!.Other!.length > 0;
   const etcShare = etcSplitOn
@@ -263,22 +280,30 @@ export function computeMonth(params: {
   const byMember: Record<string, MemberMonthResult> = {};
   ids.forEach((id) => {
     const bazar = col(id, "bazar");
-    const utilities = col(id, "utilities");
+    const electricity = col(id, "electricity");
+    const gas = col(id, "gas");
     const wifi = col(id, "wifi");
+    const utilities = electricity + gas + wifi;
     const etc = col(id, "etc");
     const mealCost = mealRate * mealCount[id];
     byMember[id] = {
       meals: mealCount[id],
       bazar,
       utilities,
+      electricity,
+      gas,
       wifi,
       etc,
-      total: bazar + utilities + wifi + etc,
+      total: bazar + utilities + etc,
       entryCount: count[id],
       adjustments: adj[id],
       mealCost,
+      electricityShare: elecShare[id],
+      gasShare: gasShare[id],
+      wifiShare: wifiShare[id],
+      etcShare: etcShare[id],
       settlementShare: mealCost + elecShare[id] + gasShare[id] + wifiShare[id] + etcShare[id],
-      paidAdjustment: adj[id].bazar + adj[id].utilities + adj[id].wifi + adj[id].etc,
+      paidAdjustment: adj[id].bazar + adj[id].electricity + adj[id].gas + adj[id].wifi + adj[id].etc,
       daysHome: daysHome[id],
     };
   });
