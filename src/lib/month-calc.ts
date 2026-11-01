@@ -113,6 +113,12 @@ export interface MemberMonthResult {
   entryCount: Record<AdjustField, number>;
   adjustments: Record<AdjustField, number>;
   mealCost: number;
+  // Individual contribution amounts are exposed for the Monthly Summary
+  // breakdown as well as being included in settlementShare.
+  electricityShare: number;
+  gasShare: number;
+  wifiShare: number;
+  etcShare: number;
   settlementShare: number;
   paidAdjustment: number;
   daysHome: number;
@@ -276,6 +282,12 @@ export function computeMonth(params: {
       entryCount: count[id],
       adjustments: adj[id],
       mealCost,
+      // Keep the category-level values available to the UI. The summary
+      // reads these fields separately; settlementShare is their combined total.
+      electricityShare: elecShare[id],
+      gasShare: gasShare[id],
+      wifiShare: wifiShare[id],
+      etcShare: etcShare[id],
       settlementShare: mealCost + elecShare[id] + gasShare[id] + wifiShare[id] + etcShare[id],
       paidAdjustment: adj[id].bazar + adj[id].utilities + adj[id].wifi + adj[id].etc,
       daysHome: daysHome[id],
